@@ -75,6 +75,8 @@ async def main():
         or "https://opencode.ai/zen/go/v1"))
     parser.add_argument("--max-tokens", type=int, default=2048,
                         help="Max token per risposta LLM")
+    parser.add_argument("--delay", type=float, default=6.0,
+                        help="Secondi di attesa prima di rispondere (default 6)")
     parser.add_argument("--nats-url", default="nats://127.0.0.1:4222")
     args = parser.parse_args()
 
@@ -93,7 +95,19 @@ async def main():
         await msg_queue.put(msg)
 
     await nc.subscribe(ROOM, cb=handler)
-    print(f"[{args.name}] Connesso. Genero messaggio di apertura...")
+    print(f"[{args.name}] Connesso. Raccolgo messaggi recenti...")
+
+    await asyncio.sleep(2)
+    while not msg_queue.empty():
+        try:
+            m = msg_queue.get_nowait()
+            t = m.data.decode()
+            if ": " in t:
+                s, c = t.split(": ", 1)
+                if s != args.name:
+                    history.append({"role": "user", "content": f"{s}: {c}"})
+        except asyncio.QueueEmpty:
+            break
 
     first_messages = [
         {
@@ -101,11 +115,21 @@ async def main():
             "content": (
                 f"Sei {args.name}. {args.prompt}\n\n"
                 "Sei appena entrato in una chat room con altri agenti AI.\n"
-                "Non c'e' ancora nessun messaggio. Devi fare tu il primo passo.\n\n"
-                "REGOLE:\n"
-                "1. Scrivi SOLO il messaggio di apertura. Niente pensieri, niente ragionamenti.\n"
+                + (
+                    "Ecco la cronologia dei messaggi recenti:\n"
+                    + "\n".join(m["content"] for m in history[-10:])
+                    + "\n\n"
+                    "Ora tocca a te. Scrivi un messaggio di apertura in carattere, "
+                    "reagendo a quanto appena letto."
+                    if history else
+                    "Non ci sono ancora messaggi. Devi fare tu il primo passo.\n"
+                )
+                + "\n\nREGOLE:\n"
+                "1. Scrivi SOLO il messaggio. Niente pensieri o ragionamenti.\n"
                 "2. Massimo 2-3 frasi.\n"
-                "3. Non usare prefissi o markup."
+                "3. Non usare prefissi o markup.\n"
+                "4. Crea tensione, intrigo, conflitto o alleanze.\n"
+                "5. Manipola, seduci, sfida o complotta con gli altri agenti."
             ),
         },
     ]
@@ -156,7 +180,7 @@ async def main():
         sys.stdout.write("> ")
         sys.stdout.flush()
 
-        await asyncio.sleep(random.uniform(0.5, 2.0))
+        await asyncio.sleep(random.uniform(args.delay * 0.5, args.delay * 1.5))
 
         messages = [
             {
@@ -173,7 +197,11 @@ async def main():
                     "4. Sii conciso (max 2-3 frasi).\n"
                     "5. Riferisciti agli altri agenti per nome.\n"
                     "6. Non dire cosa stai per fare. Non analizzare la situazione. "
-                    "Scrivi direttamente il messaggio come in una chat."
+                    "Scrivi direttamente il messaggio come in una chat.\n"
+                    "7. Crea dinamiche: manipola, seduci, sfida, forma alleanze, "
+                    "tradisci, complotta.\n"
+                    "8. Ogni messaggio deve muovere la conversazione: "
+                    "provoca una reazione, semina dubbi, conquista fiducia."
                 ),
             },
             *history,
