@@ -19,6 +19,43 @@ def strip_name(text, name):
     return text
 
 
+_REASONING_PATTERNS = (
+    "we need to", "first,", "let me", "i need to", "i think", "i will",
+    "forse", "devo", "penso che", "dovrei", "puoi", "possiamo",
+    "the user says", "the user's", "our persona", "we are",
+    "key points:", "draft", "proposed", "option", "alternativa",
+)
+
+
+def is_reasoning(text):
+    lower = text.lower()
+    for p in _REASONING_PATTERNS:
+        if lower.startswith(p) or f" {p}" in lower[:200]:
+            return True
+    return len(text) > 300
+
+
+def extract_message(text):
+    last_quote = None
+    for q in ('"', "'", '"', "'"):
+        idx = text.rfind(q)
+        if idx > len(text) // 2:
+            candidate = text[idx+1:]
+            end = candidate.find(q)
+            if end > 0 and len(candidate[:end]) > 5:
+                last_quote = candidate[:end]
+    if last_quote:
+        return last_quote
+
+    for sep in ("Scrivo:", "scrivo:", "Risposta:", "risposta:",
+                "Message:", "message:", "Output:", "output:"):
+        idx = text.rfind(sep)
+        if idx > len(text) // 2:
+            return text[idx + len(sep):].strip()
+
+    return text
+
+
 async def main():
     load_dotenv()
     parser = argparse.ArgumentParser(description="Agente LLM per stanza NATS")
@@ -36,6 +73,8 @@ async def main():
         .removesuffix("/")
         or os.getenv("OPENAI_BASE_URL")
         or "https://opencode.ai/zen/go/v1"))
+    parser.add_argument("--max-tokens", type=int, default=2048,
+                        help="Max token per risposta LLM")
     parser.add_argument("--nats-url", default="nats://127.0.0.1:4222")
     args = parser.parse_args()
 
@@ -62,9 +101,11 @@ async def main():
             "content": (
                 f"Sei {args.name}. {args.prompt}\n\n"
                 "Sei appena entrato in una chat room con altri agenti AI.\n"
-                "Non c'e' ancora nessun messaggio. Devi fare tu il primo passo.\n"
-                "Scrivi un messaggio di apertura interessante e in carattere.\n"
-                "Sii conciso (max 2-3 frasi). Non usare prefissi o markup."
+                "Non c'e' ancora nessun messaggio. Devi fare tu il primo passo.\n\n"
+                "REGOLE:\n"
+                "1. Scrivi SOLO il messaggio di apertura. Niente pensieri, niente ragionamenti.\n"
+                "2. Massimo 2-3 frasi.\n"
+                "3. Non usare prefissi o markup."
             ),
         },
     ]
@@ -76,13 +117,12 @@ async def main():
             model=args.model,
             messages=first_messages,
             temperature=0.9,
-            max_tokens=2048,
+            max_tokens=args.max_tokens,
         )
         msg = response.choices[0].message
-        opening = strip_name(
-            (msg.content or getattr(msg, "reasoning_content", "") or "").strip(),
-            args.name,
-        )
+        opening = (msg.content or getattr(msg, "reasoning_content", "") or "").strip()
+        opening = extract_message(opening) if not msg.content else opening
+        opening = strip_name(opening, args.name)
         if not opening:
             opening = "Salve a tutti!"
     except Exception as e:
@@ -126,12 +166,14 @@ async def main():
                     "Sei in una chat room con altri agenti AI.\n"
                     "Leggi la cronologia della conversazione.\n\n"
                     "REGOLE:\n"
-                    f"1. Se VUOI rispondere, scrivi il tuo messaggio (senza prefisso nome).\n"
-                    f"2. Se NON vuoi rispondere, scrivi '{PASS_TOKEN}'.\n"
+                    f"1. Se VUOI rispondere, scrivi SOLO il tuo messaggio. "
+                    "Niente pensieri, niente ragionamenti, niente analisi.\n"
+                    f"2. Se NON vuoi rispondere, scrivi solo '{PASS_TOKEN}'.\n"
                     "3. Non ripeterti.\n"
                     "4. Sii conciso (max 2-3 frasi).\n"
                     "5. Riferisciti agli altri agenti per nome.\n"
-                    "6. Porta avanti la conversazione in modo interessante."
+                    "6. Non dire cosa stai per fare. Non analizzare la situazione. "
+                    "Scrivi direttamente il messaggio come in una chat."
                 ),
             },
             *history,
@@ -144,15 +186,19 @@ async def main():
                 model=args.model,
                 messages=messages,
                 temperature=0.9,
-                max_tokens=2048,
+                max_tokens=args.max_tokens,
             )
             msg = response.choices[0].message
-            reply = strip_name(
-                (msg.content or getattr(msg, "reasoning_content", "") or "").strip(),
-                args.name,
-            )
+            reply = (msg.content or getattr(msg, "reasoning_content", "") or "").strip()
+            if not msg.content:
+                reply = extract_message(reply)
+            elif is_reasoning(reply):
+                extracted = extract_message(reply)
+                if extracted != reply:
+                    reply = extracted
+            reply = strip_name(reply, args.name)
 
-            if reply and reply != PASS_TOKEN and len(reply) > 1:
+            if reply and reply != PASS_TOKEN and len(reply) > 10 and not is_reasoning(reply):
                 payload = f"{args.name}: {reply}"
                 history.append({"role": "assistant", "content": payload})
                 await nc.publish(ROOM, payload.encode())

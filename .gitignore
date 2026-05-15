@@ -37,3 +37,12 @@ __pycache__/
 .venv/
 venv/
 env/
+
+# Logs
+*.log
+
+# IDE
+.idea/
+
+# Auto-generated
+.convcommit
